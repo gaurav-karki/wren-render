@@ -1,0 +1,74 @@
+# Public render farm (free unlimited minutes for public repos). Scene bundles are AES-256 encrypted
+# release assets `scene-<name>` -> <name>.zip.enc, key in secret SCENE_KEY; frames split across a matrix of jobs.
+# Start: gh workflow run blender-render.yml -f scene=cuchi-scene -f script=blender/cuchi_test.py -f start=1 -f end=150 -f chunks=10
+name: blender-render
+
+on:
+  workflow_dispatch:
+    inputs:
+      scene:   { description: 'release tag suffix / zip name', default: 'cuchi-scene' }
+      script:  { description: 'scene script inside the zip',  default: 'blender/cuchi_test.py' }
+      start:   { description: 'first frame', default: '1' }
+      end:     { description: 'last frame',  default: '150' }
+      chunks:  { description: 'parallel jobs (max 20)', default: '10' }
+      pct:     { description: 'resolution percent', default: '100' }
+      samples: { description: 'Cycles samples', default: '32' }
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          python3 - <<'E' >> "$GITHUB_OUTPUT"
+          import json
+          s, e, n = int("${{ inputs.start }}"), int("${{ inputs.end }}"), max(1, min(20, int("${{ inputs.chunks }}")))
+          tot = e - s + 1; step = -(-tot // n)
+          r = [{"a": a, "b": min(e, a + step - 1)} for a in range(s, e + 1, step)]
+          print("matrix=" + json.dumps({"include": r}))
+          E
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCENE_KEY: ${{ secrets.SCENE_KEY }}
+    steps:
+      - name: Cache Blender
+        id: cb
+        uses: actions/cache@v4
+        with:
+          path: blender-4.5.16-linux-x64
+          key: blender-4.5.16-linux-x64
+      - name: Get Blender
+        if: steps.cb.outputs.cache-hit != 'true'
+        run: wget -q https://download.blender.org/release/Blender4.5/blender-4.5.16-linux-x64.tar.xz && tar xf blender-4.5.16-linux-x64.tar.xz
+      - name: Get scene
+        run: |
+          sudo apt-get install -y -qq libxi6 libxkbcommon0 libxxf86vm1 libsm6 libgl1 >/dev/null || true
+          gh release download "scene-${{ inputs.scene }}" -R "${{ github.repository }}" -p "${{ inputs.scene }}.zip.enc"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SCENE_KEY -in "${{ inputs.scene }}.zip.enc" -out "${{ inputs.scene }}.zip"
+          rm "${{ inputs.scene }}.zip.enc"
+          mkdir work && cd work && unzip -q "../${{ inputs.scene }}.zip"
+          for z in $(find . -name '*.zip'); do d="${z%.zip}"; mkdir -p "$d"; unzip -qo "$z" -d "$d"; rm "$z"; done
+      - name: Render ${{ matrix.a }}-${{ matrix.b }}
+        working-directory: work
+        env:
+          ENGINE: CYCLES
+          SAMPLES: ${{ inputs.samples }}
+        run: |
+          mkdir -p ../frames; t=$(date +%s)
+          ../blender-4.5.16-linux-x64/blender -b -t 0 -P "${{ inputs.script }}" -- "$PWD/../frames/f" ${{ matrix.a }} ${{ matrix.b }} ${{ inputs.pct }} 2>&1 | grep -E "Saved|Error|Traceback|File \"" | tail -30
+          n=$(ls ../frames | wc -l); dt=$(( $(date +%s) - t )); echo "RENDERED $n frames in $dt s" | tee ../frames/timing-${{ matrix.a }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.a }}
+          path: frames/
+          retention-days: 2
