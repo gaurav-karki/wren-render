@@ -81,7 +81,10 @@ jobs:
             onStart: () => {}, onFrameUpdate: (d) => { if (d - n >= 5) { n = d; console.log(`frames ${d}`); } }});
           console.log(`RENDERED ${Number(b) - Number(a) + 1} frames in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
           E
-          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} 2>&1 | grep -vE "^\s*$|columnNumber|lineNumber|DeprecationWarning|trace-deprecation" | head -80
+          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} > ../render.log 2>&1; code=$?
+          grep -vE "PropertyBinding|columnNumber|lineNumber|eprecation|^\s*$" ../render.log | tail -60
+          ls ../frames 2>/dev/null | wc -l
+          exit $code
       - uses: actions/upload-artifact@v4
         with:
           name: frames-${{ matrix.a }}
