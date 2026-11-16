@@ -71,7 +71,7 @@ jobs:
           const [comp, a, b] = process.argv.slice(2);
           const serveUrl = path.resolve('../site');
           const chromiumOptions = {gl: 'swangle'};
-          const timeoutInMilliseconds = 600000;
+          const timeoutInMilliseconds = 1200000;
           await ensureBrowser();
           const t0 = Date.now();
           const composition = await selectComposition({serveUrl, id: comp, chromiumOptions, timeoutInMilliseconds});
@@ -81,7 +81,7 @@ jobs:
             onStart: () => {}, onFrameUpdate: (d) => { if (d - n >= 5) { n = d; console.log(`frames ${d}`); } }});
           console.log(`RENDERED ${Number(b) - Number(a) + 1} frames in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
           E
-          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} 2>&1 | grep -vE "^\s*$" | tail -40
+          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} 2>&1 | grep -vE "^\s*$|columnNumber|lineNumber|DeprecationWarning|trace-deprecation" | head -80
       - uses: actions/upload-artifact@v4
         with:
           name: frames-${{ matrix.a }}
