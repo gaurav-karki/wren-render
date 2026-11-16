@@ -1,0 +1,90 @@
+# Remotion render farm: a pre-built Remotion bundle (site + only the needed public assets) is an AES-256 encrypted
+# release asset `remotion-<name>` -> <name>.zip.enc (key: secret SCENE_KEY). Frames are split across a matrix of
+# jobs; each uploads JPEG frames as an artifact; the caller downloads them and muxes the audio locally.
+# Start: gh workflow run remotion-render.yml -f bundle=ep1 -f comp=WSU-Ep1-YouTube -f start=0 -f end=749 -f chunks=20
+name: remotion-render
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle: { description: 'release tag suffix / zip name', default: 'ep1' }
+      comp:   { description: 'composition id', default: 'WSU-Ep1-YouTube' }
+      start:  { description: 'first frame', default: '0' }
+      end:    { description: 'last frame', default: '749' }
+      chunks: { description: 'parallel jobs (max 20)', default: '20' }
+      remotion: { description: '@remotion/renderer version', default: '4.0.541' }
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          python3 - <<'E' >> "$GITHUB_OUTPUT"
+          import json
+          s, e, n = int("${{ inputs.start }}"), int("${{ inputs.end }}"), max(1, min(20, int("${{ inputs.chunks }}")))
+          tot = e - s + 1; step = -(-tot // n)
+          r = [{"a": a, "b": min(e, a + step - 1)} for a in range(s, e + 1, step)]
+          print("matrix=" + json.dumps({"include": r}))
+          E
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCENE_KEY: ${{ secrets.SCENE_KEY }}
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Cache renderer + browser
+        uses: actions/cache@v4
+        with:
+          path: |
+            r/node_modules
+            ~/.cache/remotion
+            r/node_modules/.remotion
+          key: remotion-${{ inputs.remotion }}-v1
+      - name: Install renderer
+        run: |
+          mkdir -p r && cd r
+          [ -d node_modules/@remotion/renderer ] || (npm init -y >/dev/null && npm i --no-audit --no-fund @remotion/renderer@${{ inputs.remotion }} >/dev/null)
+          sudo apt-get install -y -qq libnss3 libgbm1 libasound2t64 >/dev/null 2>&1 || true
+      - name: Get bundle
+        run: |
+          gh release download "remotion-${{ inputs.bundle }}" -R "${{ github.repository }}" -p "${{ inputs.bundle }}.zip.enc"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SCENE_KEY -in "${{ inputs.bundle }}.zip.enc" -out b.zip
+          rm "${{ inputs.bundle }}.zip.enc"
+          mkdir site && cd site && unzip -q ../b.zip && rm ../b.zip && du -sh .
+      - name: Render ${{ matrix.a }}-${{ matrix.b }}
+        working-directory: r
+        run: |
+          cat > go.mjs <<'E'
+          import path from 'node:path';
+          import {ensureBrowser, renderFrames, selectComposition} from '@remotion/renderer';
+          const [comp, a, b] = process.argv.slice(2);
+          const serveUrl = path.resolve('../site');
+          const chromiumOptions = {gl: 'swangle'};
+          const timeoutInMilliseconds = 600000;
+          await ensureBrowser();
+          const t0 = Date.now();
+          const composition = await selectComposition({serveUrl, id: comp, chromiumOptions, timeoutInMilliseconds});
+          let n = 0;
+          await renderFrames({composition, serveUrl, chromiumOptions, timeoutInMilliseconds, frameRange: [Number(a), Number(b)],
+            imageFormat: 'jpeg', jpegQuality: 92, outputDir: path.resolve('../frames'), concurrency: 2,
+            onStart: () => {}, onFrameUpdate: (d) => { if (d - n >= 5) { n = d; console.log(`frames ${d}`); } }});
+          console.log(`RENDERED ${Number(b) - Number(a) + 1} frames in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+          E
+          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} 2>&1 | grep -vE "^\s*$" | tail -40
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.a }}
+          path: frames/
+          retention-days: 2
+          compression-level: 0
