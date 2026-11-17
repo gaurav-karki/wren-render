@@ -13,6 +13,7 @@ on:
       end:    { description: 'last frame', default: '749' }
       chunks: { description: 'parallel jobs (max 20)', default: '20' }
       remotion: { description: '@remotion/renderer version', default: '4.0.541' }
+      scale:  { description: 'output scale (1.5 = supersample 1080p)', default: '1' }
 
 jobs:
   plan:
@@ -77,11 +78,11 @@ jobs:
           const composition = await selectComposition({serveUrl, id: comp, chromiumOptions, timeoutInMilliseconds});
           let n = 0;
           await renderFrames({composition, serveUrl, chromiumOptions, timeoutInMilliseconds, frameRange: [Number(a), Number(b)],
-            imageFormat: 'jpeg', jpegQuality: 92, outputDir: path.resolve('../frames'), concurrency: 2,
+            imageFormat: 'jpeg', jpegQuality: 94, scale: Number(process.env.SCALE || '1'), outputDir: path.resolve('../frames'), concurrency: 2,
             onStart: () => {}, onFrameUpdate: (d) => { if (d - n >= 5) { n = d; console.log(`frames ${d}`); } }});
           console.log(`RENDERED ${Number(b) - Number(a) + 1} frames in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
           E
-          node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} > ../render.log 2>&1; code=$?
+          SCALE="${{ inputs.scale }}" node go.mjs "${{ inputs.comp }}" ${{ matrix.a }} ${{ matrix.b }} > ../render.log 2>&1; code=$?
           grep -vE "PropertyBinding|columnNumber|lineNumber|eprecation|^\s*$" ../render.log | tail -60
           ls ../frames 2>/dev/null | wc -l
           exit $code
