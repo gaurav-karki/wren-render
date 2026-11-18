@@ -1,0 +1,87 @@
+# Voice farm: Chatterbox TTS (MIT) on CPU runners. Input is an AES-256 encrypted release asset `voice-<job>` -> <job>.zip.enc
+# (lines.json + refs/*.wav, key: secret SCENE_KEY). Lines are split round-robin across jobs; each uploads its WAVs as an
+# encrypted artifact. Nothing readable is left in the repo or the logs.
+# Start: gh workflow run voice.yml -f job=ep1 -f chunks=6
+name: voice
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:    { description: 'release tag suffix / zip name', default: 'test' }
+      chunks: { description: 'parallel jobs (max 20)', default: '4' }
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          n=$(python3 -c "print(max(1, min(20, int('${{ inputs.chunks }}'))))")
+          echo "matrix={\"k\":[$(seq -s, 0 $((n-1)))],\"n\":[$n]}" >> "$GITHUB_OUTPUT"
+
+  tts:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCENE_KEY: ${{ secrets.SCENE_KEY }}
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - name: Cache venv + model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cb
+            ~/.cache/huggingface
+          key: chatterbox-0.1.7-v1
+      - name: Install Chatterbox (CPU)
+        run: |
+          [ -x ~/cb/bin/python ] || (uv venv -q --python 3.11 ~/cb && uv pip install -q --python ~/cb/bin/python \
+            --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu \
+            chatterbox-tts==0.1.7 torch==2.6.0+cpu torchaudio==2.6.0+cpu)
+      - name: Get job
+        run: |
+          gh release download "voice-${{ inputs.job }}" -R "${{ github.repository }}" -p "${{ inputs.job }}.zip.enc"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SCENE_KEY -in "${{ inputs.job }}.zip.enc" -out j.zip
+          mkdir job && cd job && unzip -q ../j.zip && rm ../j.zip ../"${{ inputs.job }}.zip.enc"
+      - name: Generate (part ${{ matrix.k }} of ${{ matrix.n }})
+        working-directory: job
+        run: |
+          cat > gen.py <<'E'
+          import json, os, sys, time, random
+          import numpy as np, torch, torchaudio
+          from chatterbox.tts import ChatterboxTTS
+          k, n = int(sys.argv[1]), int(sys.argv[2])
+          lines = [l for i, l in enumerate(json.load(open('lines.json'))) if i % n == k]
+          torch.set_num_threads(os.cpu_count() or 4)
+          m = ChatterboxTTS.from_pretrained(device='cpu')
+          os.makedirs('../out', exist_ok=True)
+          for i, l in enumerate(lines):
+              seed = int(l.get('seed', 11)); torch.manual_seed(seed); random.seed(seed); np.random.seed(seed)
+              t = time.time()
+              w = m.generate(l['text'], audio_prompt_path=l['ref'], exaggeration=float(l.get('exaggeration', 0.5)),
+                             cfg_weight=float(l.get('cfg', 0.5)), temperature=float(l.get('temperature', 0.8)))
+              torchaudio.save(f"../out/{l['id']}.wav", w, m.sr)
+              print(f'line {i + 1}/{len(lines)}: {w.shape[-1] / m.sr:.1f} s audio in {time.time() - t:.0f} s', flush=True)
+          print(f'DONE {len(lines)} lines')
+          E
+          ~/cb/bin/python gen.py ${{ matrix.k }} ${{ matrix.n }} > ../gen.log 2>&1; code=$?
+          grep -E "^line |^DONE|Error|rror:" ../gen.log | tail -40
+          exit $code
+      - name: Encrypt output
+        run: |
+          cd out && zip -q -r ../v.zip . && cd ..
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SCENE_KEY -in v.zip -out "voice-${{ matrix.k }}.zip.enc"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-${{ matrix.k }}
+          path: voice-${{ matrix.k }}.zip.enc
+          retention-days: 1
+          compression-level: 0
