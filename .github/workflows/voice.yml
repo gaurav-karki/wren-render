@@ -72,8 +72,9 @@ jobs:
               print(f'line {i + 1}/{len(lines)}: {w.shape[-1] / m.sr:.1f} s audio in {time.time() - t:.0f} s', flush=True)
           print(f'DONE {len(lines)} lines')
           E
+          set +e
           ~/cb/bin/python gen.py ${{ matrix.k }} ${{ matrix.n }} > ../gen.log 2>&1; code=$?
-          grep -E "^line |^DONE|Error|rror:" ../gen.log | tail -40
+          if [ $code = 0 ]; then grep -E "^line |^DONE" ../gen.log; else grep -vE "arning|^\s*$" ../gen.log | tail -25; fi
           exit $code
       - name: Encrypt output
         run: |
