@@ -40,12 +40,12 @@ jobs:
           path: |
             ~/cb
             ~/.cache/huggingface
-          key: chatterbox-0.1.7-v1
+          key: chatterbox-0.1.7-v2
       - name: Install Chatterbox (CPU)
         run: |
           [ -x ~/cb/bin/python ] || (uv venv -q --python 3.11 ~/cb && uv pip install -q --python ~/cb/bin/python \
             --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu \
-            chatterbox-tts==0.1.7 torch==2.6.0+cpu torchaudio==2.6.0+cpu)
+            chatterbox-tts==0.1.7 torch==2.6.0+cpu torchaudio==2.6.0+cpu 'setuptools<81')
       - name: Get job
         run: |
           gh release download "voice-${{ inputs.job }}" -R "${{ github.repository }}" -p "${{ inputs.job }}.zip.enc"
